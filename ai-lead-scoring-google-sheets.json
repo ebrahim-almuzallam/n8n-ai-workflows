@@ -1,0 +1,432 @@
+{
+  "name": "AI Lead Scoring to Google Sheets",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-scoring-demo",
+        "options": {
+          "responseData": "Lead received. Processing enrichment now."
+        }
+      },
+      "id": "08b7b30a-de08-468f-84cd-1e81cd553faf",
+      "name": "Inbound Lead Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1504,
+        192
+      ],
+      "webhookId": "35aba2ac-5db6-4cb1-b908-0887f4289e04"
+    },
+    {
+      "parameters": {
+        "url": "={{ (() => { const raw = $json.body?.['Company Website URL'] || $json.body?.website || ''; return raw.startsWith('http') ? raw : 'https://' + raw; })() }}",
+        "options": {
+          "redirect": {
+            "redirect": {}
+          },
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 10000
+        }
+      },
+      "id": "d1994127-d62d-42ca-b815-e63d328b434b",
+      "name": "Scrape Company Website",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1280,
+        192
+      ],
+      "retryOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// 1. Read the lead from the webhook (accepts \"Lead Name\" style or snake_case keys)\nconst body = $('Inbound Lead Webhook').first()?.json?.body ?? {};\nconst leadName = body['Lead Name'] ?? body.lead_name ?? body.name ?? 'Inbound Lead';\nconst email = body['Email'] ?? body.email ?? '';\nconst website = body['Company Website URL'] ?? body.company_website ?? body.website ?? '';\nconst challenge = body['Stated Challenge'] ?? body.stated_challenge ?? body.challenge ?? '';\n\n// 2. Strip scripts, styles and tags from the scraped page, keep ~5,000 characters\nlet text = String($json.data ?? $json.html ?? '');\ntext = text\n  .replace(/<script\\b[^<]*(?:(?!<\\/script>)<[^<]*)*<\\/script>/gi, ' ')\n  .replace(/<style\\b[^<]*(?:(?!<\\/style>)<[^<]*)*<\\/style>/gi, ' ')\n  .replace(/<[^>]+>/g, ' ')\n  .replace(/\\s+/g, ' ')\n  .trim()\n  .slice(0, 5000);\n\nreturn {\n  json: {\n    lead_name: leadName,\n    email: email,\n    company_website: website,\n    stated_challenge: challenge,\n    scraped_text: text || 'Website content could not be retrieved.'\n  }\n};"
+      },
+      "id": "92d0580d-4d64-44a7-b458-3bbdb7d938da",
+      "name": "Extract Text From HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1056,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// 1. Find the model's JSON answer anywhere in the model node's output\nfunction findAiText(obj) {\n  if (!obj) return null;\n  if (typeof obj === 'string' && obj.includes('fit_score')) return obj;\n  if (typeof obj === 'object') {\n    for (const val of Object.values(obj)) {\n      const found = findAiText(val);\n      if (found) return found;\n    }\n  }\n  return null;\n}\n\nconst rawText = findAiText($json) ?? findAiText($('Message a model').first()?.json) ?? '';\n\nlet ai = null;\ntry {\n  ai = JSON.parse(rawText.replace(/```json/gi, '').replace(/```/g, '').trim());\n} catch (e) {\n  ai = null;\n}\nconst ok = ai !== null && typeof ai === 'object';\n\n// 2. Lead details come from the normalised Extract node (one lead per webhook call)\nconst lead = $('Extract Text From HTML').first().json;\n\n// 3. If the AI answer could not be parsed, say so instead of filling in fake values\nconst score = ok ? Math.min(10, Math.max(0, Math.round(Number(ai.fit_score) || 0))) : 0;\n\nreturn {\n  json: {\n    lead_name: lead.lead_name,\n    email: lead.email,\n    company_website: lead.company_website,\n    stated_challenge: lead.stated_challenge,\n    ai_parse_ok: ok,\n    company: (ok && ai.company) || lead.company_website || 'Unknown',\n    business_model: ok ? (ai.business_model || '') : '',\n    fit_score: score,\n    detected_pain_points: ok ? (ai.detected_pain_points || '') : '',\n    sales_icebreaker: ok ? (ai.sales_icebreaker || '') : '',\n    recommended_action: ok ? (ai.recommended_action || '') : 'Review manually: AI output could not be parsed'\n  }\n};"
+      },
+      "id": "4eec5b0d-480c-4085-a1b4-6b153d1af463",
+      "name": "Parse AI Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -256,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond1",
+              "leftValue": "={{ $json.fit_score }}",
+              "rightValue": 7,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "82fe6815-bfaf-4a92-9d0f-83b697b872bd",
+      "name": "Priority Switch (Fit >= 7)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -32,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "slack_message",
+              "type": "string",
+              "value": "={{ `🚨 *HOT LEAD ALERT (Fit: ${$json.fit_score}/10)*\n\n*Company:* ${$json.company}\n*Model:* ${$json.business_model}\n*Pain Point:* ${$json.detected_pain_points}\n\n*Sales Icebreaker:* \n\"${$json.sales_icebreaker}\"\n\n*Recommended Action:* \n${$json.recommended_action}` }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "7e040fbd-8a3b-49da-b78d-2787c41f0ff9",
+      "name": "Format Executive Briefing",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        208,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "b1",
+              "name": "questionnaire_subject",
+              "type": "string",
+              "value": "={{ `Quick questions about your project – ${$json.company}` }}"
+            },
+            {
+              "id": "b2",
+              "name": "questionnaire_body",
+              "type": "string",
+              "value": "={{ `Hi ${$json.lead_name || 'there'},\n\nThanks for reaching out about ${$json.stated_challenge || 'your current workflow'}. To prepare the best next steps for ${$json.company}, could you answer four quick questions?\n\n1) What is your current team size?\n2) Which tools do you use for this process today?\n3) What is your target timeline?\n4) What is your approximate budget range?\n\nJust reply to this email and we'll follow up shortly.` }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "30913f05-2df2-47ba-a6c6-08ea90854d83",
+      "name": "Format Qualification Questionnaire",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        208,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4O-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a B2B sales analyst. Score how well an inbound lead fits the seller's offer below, using the lead's website text and the challenge they described.\n\nSELLER CONTEXT (edit this to match the business using the workflow):\nWe build AI-powered workflow automations (n8n, API integrations, AI agents) for small and mid-sized businesses that want to cut repetitive manual work.\n\nScoring guide for fit_score (whole number from 1 to 10):\n- 8-10: clear need the seller solves, company type and size match, specific challenge\n- 5-7: plausible need, but budget, size or urgency is unclear\n- 1-4: little or no connection to what the seller offers\n\nReturn ONLY a valid JSON object (no markdown fences, no commentary) with exactly these keys:\n- company: the company name\n- business_model: one sentence on what they sell and to whom\n- fit_score: whole number from 1 to 10, following the scoring guide\n- detected_pain_points: the main bottleneck you can actually see in their website text or stated challenge (do not invent one)\n- sales_icebreaker: one personalised opening sentence that mentions something specific from their website\n- recommended_action: one concrete next step for the seller"
+            },
+            {
+              "content": "=Lead name: {{ $json.lead_name }}\nStated challenge: {{ $json.stated_challenge || 'Not provided' }}\nCompany website: {{ $json.company_website }}\n\nWebsite text:\n{{ $json.scraped_text }}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.3,
+      "position": [
+        -848,
+        192
+      ],
+      "id": "5765b340-5ef6-4602-83bd-03e261392b9d",
+      "name": "Message a model"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Lead Name": "={{ $json.lead_name }}",
+            "Email": "={{ $json.email }}",
+            "Company": "={{ $json.company }}",
+            "Business Model": "={{ $json.business_model }}",
+            "Fit Score": "={{ $json.fit_score }}",
+            "Pain Points": "={{ $json.detected_pain_points }}",
+            "Icebreaker": "={{ $json.sales_icebreaker }}",
+            "Recommended Action": "={{ $json.recommended_action }}",
+            "Timestamp": "={{ $now.toFormat('yyyy-MM-dd HH:mm') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Timestamp",
+              "displayName": "Timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Lead Name",
+              "displayName": "Lead Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Company",
+              "displayName": "Company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Fit Score",
+              "displayName": "Fit Score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Business Model",
+              "displayName": "Business Model",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Pain Points",
+              "displayName": "Pain Points",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Icebreaker",
+              "displayName": "Icebreaker",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Recommended Action",
+              "displayName": "Recommended Action",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -96,
+        80
+      ],
+      "id": "68eea8d4-083a-46e6-a5e7-ca92914c4758",
+      "name": "Append row in sheet"
+    },
+    {
+      "parameters": {
+        "content": "## AI Lead Scoring → Google Sheets\n\n1. Webhook receives a lead (name, email, website, challenge)\n2. The website is scraped and cleaned to plain text\n3. GPT-4o-mini scores the fit from 1 to 10 against the SELLER CONTEXT in the model node\n4. Every lead is written to Google Sheets\n5. Fit 7+ gets a sales briefing (Slack-formatted text), lower scores get a qualification email draft\n\n**Setup:** add your OpenAI and Google Sheets credentials, choose your sheet, edit SELLER CONTEXT.",
+        "height": 300,
+        "width": 520
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1560,
+        -300
+      ],
+      "typeVersion": 1,
+      "id": "cbebbd1f-36b4-4e8d-9323-e025d91cfeb0",
+      "name": "Sticky Note"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Inbound Lead Webhook": {
+      "main": [
+        [
+          {
+            "node": "Scrape Company Website",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scrape Company Website": {
+      "main": [
+        [
+          {
+            "node": "Extract Text From HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Text From HTML": {
+      "main": [
+        [
+          {
+            "node": "Message a model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Output": {
+      "main": [
+        [
+          {
+            "node": "Priority Switch (Fit >= 7)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Append row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Priority Switch (Fit >= 7)": {
+      "main": [
+        [
+          {
+            "node": "Format Executive Briefing",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Format Qualification Questionnaire",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Executive Briefing": {
+      "main": [
+        []
+      ]
+    },
+    "Format Qualification Questionnaire": {
+      "main": [
+        []
+      ]
+    },
+    "Message a model": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "nodeGroups": [],
+  "tags": []
+}

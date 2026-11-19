@@ -1,0 +1,231 @@
+{
+  "name": "AI Support Inquiry Router",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "support-inquiry-demo",
+        "options": {}
+      },
+      "id": "4ecf91f8-41aa-4b99-bf0b-a9041119649f",
+      "name": "Support Inquiry Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -592,
+        128
+      ],
+      "webhookId": "f08b6c60-83e9-467b-a858-cb95b56022a9"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4o-mini",
+          "cachedResultName": "GPT-4O-MINI",
+          "cachedResultUrl": ""
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are a support inquiry classifier for a customer support team. Given a customer message, respond with ONLY a valid JSON object (no markdown, no commentary) with exactly these fields:\n- category: one of \"Billing\", \"Technical\", \"General Inquiry\"\n- sentiment: one of \"Frustrated\", \"Neutral\", \"Positive\"\n- priority: one of \"High\", \"Medium\", \"Low\"\n- summary: a 1-sentence summary of the inquiry\n- draft_response: a short, context-aware, empathetic draft reply to the customer",
+              "role": "system"
+            },
+            {
+              "content": "={{ $json.body.message ?? $json.body.data?.fields?.[0]?.value ?? '' }}"
+            }
+          ]
+        },
+        "simplify": "={{ true }}",
+        "jsonOutput": true,
+        "options": {}
+      },
+      "id": "9d7a965e-7331-4078-a521-4eaa8b04b97a",
+      "name": "Classify Inquiry (OpenAI)",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        -384,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "d4e5f6a7-cond-0001",
+                    "leftValue": "={{ $json.message.content.priority }}",
+                    "rightValue": "High",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  },
+                  {
+                    "id": "d4e5f6a7-cond-0002",
+                    "leftValue": "={{ $json.message.content.sentiment }}",
+                    "rightValue": "Frustrated",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "or"
+              },
+              "renameOutput": true,
+              "outputKey": "Urgent"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "d4e5f6a7-cond-0003",
+                    "leftValue": "={{ $json.message.content.priority }}",
+                    "rightValue": "Medium",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  },
+                  {
+                    "id": "d4e5f6a7-cond-0004",
+                    "leftValue": "={{ $json.message.content.priority }}",
+                    "rightValue": "Low",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "or"
+              },
+              "renameOutput": true,
+              "outputKey": "Standard"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "none"
+        }
+      },
+      "id": "7d75b43d-56e8-4289-badc-c816cf9d7f1b",
+      "name": "Priority Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        -64,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst classification = data.message?.content ?? data;\nconst body = $('Support Inquiry Webhook').first().json.body ?? {};\nconst originalMessage = body.message ?? body.data?.fields?.[0]?.value ?? '';\n\nreturn [{\n  json: {\n    alertType: \"URGENT\",\n    channel: \"#support-urgent\",\n    to: \"support-team@example.com\",\n    subject: `[URGENT] ${classification.category} inquiry - ${classification.priority} priority`,\n    message: `New urgent support request.\\n\\nCategory: ${classification.category}\\nSentiment: ${classification.sentiment}\\nSummary: ${classification.summary}\\n\\nSuggested response:\\n${classification.draft_response}`,\n    originalMessage,\n    notifiedAt: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "1e1be999-f996-447b-a9fc-198b233cf8a8",
+      "name": "Prepare Urgent Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        192,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst classification = data.message?.content ?? data;\nconst body = $('Support Inquiry Webhook').first().json.body ?? {};\nconst originalMessage = body.message ?? body.data?.fields?.[0]?.value ?? '';\n\nreturn [{\n  json: {\n    logType: \"STANDARD_AUTO_REPLY\",\n    category: classification.category,\n    sentiment: classification.sentiment,\n    priority: classification.priority,\n    summary: classification.summary,\n    draftResponse: classification.draft_response,\n    originalMessage,\n    loggedAt: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "609b686d-c548-4c46-8d5a-c2c46474a6d3",
+      "name": "Prepare Standard Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        192,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## AI Support Inquiry Router\n\n1. Webhook receives a customer message (`{\"message\": \"...\"}` or a Tally form)\n2. GPT-4o-mini returns category, sentiment, priority, a one-line summary and a draft reply\n3. High priority or frustrated customers go to the urgent branch, everything else to standard\n\nThe two end nodes prepare the alert / reply data. Connect a Slack, Gmail or helpdesk node to actually send it.",
+        "height": 280,
+        "width": 480
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -640,
+        -260
+      ],
+      "id": "0cc09d12-5427-457a-925d-afa2701ecc5e",
+      "name": "Sticky Note"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Support Inquiry Webhook": {
+      "main": [
+        [
+          {
+            "node": "Classify Inquiry (OpenAI)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Inquiry (OpenAI)": {
+      "main": [
+        [
+          {
+            "node": "Priority Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Priority Router": {
+      "main": [
+        [
+          {
+            "node": "Prepare Urgent Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Standard Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "nodeGroups": [],
+  "tags": []
+}
