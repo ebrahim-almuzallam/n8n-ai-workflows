@@ -6,8 +6,6 @@ Two working n8n workflows that combine webhooks, website scraping, an LLM and st
 
 ## 1. AI Lead Scoring → Google Sheets
 
-![Workflow](lead-scoring-canvas.png)
-
 An inbound lead arrives by webhook. n8n reads the company's website, an LLM scores how well the lead fits the seller's offer, every lead is logged to Google Sheets, and high-fit leads are separated from the rest.
 
 **Flow**
@@ -20,7 +18,6 @@ An inbound lead arrives by webhook. n8n reads the company's website, an LLM scor
 6. **Google Sheets** gets one row per lead
 7. **IF** fit score ≥ 7 → sales briefing (Slack-formatted text). Below 7 → qualification email draft
 
-![Results in Google Sheets](lead-scoring-sheet.png)
 
 **Design choices**
 
